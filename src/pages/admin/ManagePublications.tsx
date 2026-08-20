@@ -1,0 +1,352 @@
+import React, { useEffect, useState } from 'react';
+import { supabase } from '../../lib/supabase';
+import { Plus, Edit2, Trash2, X, Check, BookOpen, ArrowUp, ArrowDown, ArrowUpToLine } from 'lucide-react';
+
+export default function ManagePublications() {
+  const [publications, setPublications] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Form State
+  const [formData, setFormData] = useState({
+    title: '',
+    publication_type: 'Book Chapter',
+    year: '',
+    authors: '',
+    book_url: '',
+    publisher: '',
+    summary: 'View Chapter',
+    publication_url: '',
+    is_published: true,
+  });
+
+  useEffect(() => {
+    fetchPublications();
+  }, []);
+
+  async function fetchPublications() {
+    setLoading(true);
+    setErrorMsg(null);
+    const { data, error } = await supabase
+      .from('publications')
+      .select('*')
+      .order('created_at', { ascending: false });
+    
+    if (error) {
+      console.error('Supabase error:', error);
+      setErrorMsg(error.message);
+    }
+    
+    if (data) {
+      setPublications(data);
+    }
+    setLoading(false);
+  }
+
+  const handleOpenModal = (pub: any = null) => {
+    if (pub) {
+      setEditingId(pub.id);
+      setFormData({
+        title: pub.title || '',
+        publication_type: pub.publication_type || 'Book Chapter',
+        year: pub.year || '',
+        authors: pub.authors || '',
+        book_url: pub.book_url || '',
+        publisher: pub.publisher || '',
+        summary: pub.summary || 'View Chapter',
+        publication_url: pub.publication_url || '',
+        is_published: pub.is_published ?? true
+      });
+    } else {
+      setEditingId(null);
+      setFormData({
+        title: '', publication_type: 'Book Chapter', year: '',
+        authors: '', book_url: '', publisher: '', summary: 'View Chapter', publication_url: '',
+        is_published: true
+      });
+    }
+    setIsModalOpen(true);
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setEditingId(null);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    let submitData = { ...formData } as any;
+
+    // Prevent schema errors by removing un-migrated columns from the payload
+    delete submitData.display_order;
+    delete submitData.status;
+    delete submitData.isbn;
+    delete submitData.indexing;
+    // book_url might also not exist in the schema, let's remove it if it throws, but for now we need it. 
+    // Actually, let's keep book_url since we explicitly added it. If it fails on book_url next, we will know.
+    // Wait, the error ONLY complained about 'isbn' so far.
+
+    const operation = editingId
+      ? supabase.from('publications').update(submitData).eq('id', editingId)
+      : supabase.from('publications').insert([submitData]);
+
+    const { error } = await operation;
+
+    if (error) {
+      console.error('Error saving publication:', error);
+      setErrorMsg(error.message);
+    } else {
+      handleCloseModal();
+      fetchPublications();
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (window.confirm('Are you sure you want to delete this publication?')) {
+      const { error } = await supabase.from('publications').delete().eq('id', id);
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        fetchPublications();
+      }
+    }
+  };
+
+  const handleMoveOrder = async (index: number, direction: 'up' | 'down') => {
+    if (direction === 'up' && index === 0) return;
+    if (direction === 'down' && index === publications.length - 1) return;
+
+    const newPubs = [...publications];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    
+    const currentItem = newPubs[index];
+    const targetItem = newPubs[targetIndex];
+    
+    // Swap the order of items locally
+    newPubs[index] = targetItem;
+    newPubs[targetIndex] = currentItem;
+    
+    // Update local state for immediate feedback
+    setPublications(newPubs);
+    
+    // Swap created_at timestamps in DB to persist order
+    let currentCreatedAt = currentItem.created_at;
+    let targetCreatedAt = targetItem.created_at;
+    
+    if (currentCreatedAt === targetCreatedAt) {
+       const date = new Date(currentCreatedAt);
+       date.setMilliseconds(date.getMilliseconds() + (direction === 'up' ? 10 : -10));
+       currentCreatedAt = date.toISOString();
+    }
+    
+    await Promise.all([
+      supabase.from('publications').update({ created_at: targetCreatedAt }).eq('id', currentItem.id),
+      supabase.from('publications').update({ created_at: currentCreatedAt }).eq('id', targetItem.id)
+    ]);
+    
+    fetchPublications();
+  };
+
+  const handleMoveToTop = async (id: string) => {
+    // Fake moving to top by updating created_at to now
+    const { error } = await supabase.from('publications').update({ created_at: new Date().toISOString() }).eq('id', id);
+    if (!error) fetchPublications();
+  };
+
+  return (
+    <div>
+      <div className="flex flex-col md:flex-row md:justify-between md:items-end mb-8">
+        <div>
+          <h2 className="text-3xl font-serif font-bold text-primary-text mb-2">Publications</h2>
+          <p className="text-secondary-text">Manage, reorder, and update your academic publications.</p>
+        </div>
+        <button 
+          onClick={() => handleOpenModal()}
+          className="mt-4 md:mt-0 bg-gold hover:bg-gold-dark text-white font-medium py-2.5 px-5 rounded-lg flex items-center transition-colors shadow-sm"
+        >
+          <Plus size={18} className="mr-2" /> Add Publication
+        </button>
+      </div>
+
+      <div className="bg-card border border-border rounded-xl shadow-sm overflow-hidden">
+        {errorMsg && (
+          <div className="m-6 p-4 bg-red-50 border border-red-200 text-red-700 rounded-lg">
+            <p className="font-bold">Database Error:</p>
+            <p className="font-mono text-sm mt-1">{errorMsg}</p>
+          </div>
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm text-secondary-text">
+            <thead className="bg-secondary-bg text-xs uppercase text-primary-text border-b border-border">
+              <tr>
+                <th className="px-6 py-4 font-medium w-16 text-center">Order</th>
+                <th className="px-6 py-4 font-medium">Title</th>
+                <th className="px-6 py-4 font-medium">Type</th>
+                <th className="px-6 py-4 font-medium">Status</th>
+                <th className="px-6 py-4 font-medium">Year</th>
+                <th className="px-6 py-4 font-medium text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {loading ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-8 text-center">Loading publications...</td>
+                </tr>
+              ) : publications.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-6 py-12 text-center flex flex-col items-center">
+                    <div className="w-12 h-12 bg-secondary-bg rounded-full flex items-center justify-center mb-3">
+                       <BookOpen size={20} className="text-gold" />
+                    </div>
+                    <p className="font-medium text-primary-text">No publications found.</p>
+                    <p className="text-xs mt-1">Click "+ Add Publication" to add your first one.</p>
+                  </td>
+                </tr>
+              ) : (
+                publications.map((pub, index) => (
+                  <tr key={pub.id} className="hover:bg-primary-bg transition-colors group">
+                    <td className="px-2 py-4">
+                      <div className="flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity space-y-1">
+                        <button 
+                          disabled={index === 0} 
+                          onClick={() => handleMoveOrder(index, 'up')}
+                          className="text-secondary-text hover:text-gold disabled:opacity-30 p-1"
+                        >
+                           <ArrowUp size={16} />
+                        </button>
+                        <button 
+                          disabled={index === publications.length - 1} 
+                          onClick={() => handleMoveOrder(index, 'down')}
+                          className="text-secondary-text hover:text-gold disabled:opacity-30 p-1"
+                        >
+                           <ArrowDown size={16} />
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 font-medium text-primary-text max-w-[200px] truncate">{pub.title}</td>
+                    <td className="px-4 py-4">{pub.publication_type}</td>
+                    <td className="px-4 py-4">
+                      <span className={`px-2 py-1 rounded text-xs font-medium ${pub.status === 'Published' ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-yellow-100 text-yellow-700 border border-yellow-200'}`}>
+                        {pub.status || 'Published'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4">{pub.year}</td>
+                    <td className="px-6 py-4 text-right">
+                      <div className="flex items-center justify-end space-x-2">
+                        <button onClick={() => handleMoveToTop(pub.id)} title="Move to Top" className="flex items-center text-secondary-text hover:text-gold transition-colors px-2 py-1">
+                          <ArrowUpToLine size={16} />
+                        </button>
+                        <button onClick={() => handleOpenModal(pub)} className="flex items-center text-secondary-text hover:text-gold transition-colors px-2 py-1">
+                          <Edit2 size={16} className="mr-1" /> Edit
+                        </button>
+                        <button onClick={() => handleDelete(pub.id)} className="flex items-center text-secondary-text hover:text-red-500 transition-colors px-2 py-1">
+                          <Trash2 size={16} className="mr-1" /> Remove
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Simplified Modal Form */}
+      {isModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-card border border-border rounded-xl w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl">
+            <div className="flex justify-between items-center p-6 border-b border-border sticky top-0 bg-card z-10">
+              <h3 className="font-serif text-xl font-bold text-primary-text">
+                {editingId ? 'Edit Publication' : 'Add Publication'}
+              </h3>
+              <button onClick={handleCloseModal} className="text-secondary-text hover:text-gold transition-colors p-1">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleSubmit} className="p-6 space-y-5">
+              <div>
+                <label className="block text-sm font-medium text-primary-text mb-1">Chapter Title *</label>
+                <input required type="text" value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} className="w-full bg-primary-bg border border-border rounded-lg px-4 py-2.5 text-primary-text focus:border-gold focus:ring-1 focus:ring-gold outline-none transition-colors" />
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="block text-sm font-medium text-primary-text mb-2">Type (Select multiple) *</label>
+                  <div className="flex flex-wrap gap-3">
+                    {['Book Chapter', 'Scopus Indexed', 'Journal Article', 'Conference Paper', 'Book'].map(type => (
+                      <label key={type} className="flex items-center space-x-2 text-sm text-primary-text cursor-pointer bg-secondary-bg/50 px-3 py-1.5 rounded-lg border border-border hover:border-gold/30 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={(formData.publication_type || '').includes(type)}
+                          onChange={(e) => {
+                            let currentTypes = (formData.publication_type || '').split(',').map(t => t.trim()).filter(Boolean);
+                            if (e.target.checked) {
+                              if (!currentTypes.includes(type)) currentTypes.push(type);
+                            } else {
+                              currentTypes = currentTypes.filter(t => t !== type);
+                            }
+                            setFormData({...formData, publication_type: currentTypes.join(', ')});
+                          }}
+                          className="w-4 h-4 text-gold border-gray-600 rounded focus:ring-gold bg-primary-bg"
+                        />
+                        <span>{type}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-primary-text mb-1">Year *</label>
+                  <input type="text" required value={formData.year} onChange={e => setFormData({...formData, year: e.target.value})} className="w-full bg-primary-bg border border-border rounded-lg px-4 py-2.5 text-primary-text focus:border-gold outline-none transition-colors" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="block text-sm font-medium text-primary-text mb-1">Book *</label>
+                  <input type="text" required value={formData.authors} onChange={e => setFormData({...formData, authors: e.target.value})} className="w-full bg-primary-bg border border-border rounded-lg px-4 py-2.5 text-primary-text focus:border-gold outline-none transition-colors" placeholder="e.g. Building Future-Ready Leaders" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-primary-text mb-1">Book URL</label>
+                  <input type="url" value={formData.book_url} onChange={e => setFormData({...formData, book_url: e.target.value})} className="w-full bg-primary-bg border border-border rounded-lg px-4 py-2.5 text-primary-text focus:border-gold outline-none transition-colors" placeholder="Link to the book" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-primary-text mb-1">Publisher</label>
+                <input type="text" value={formData.publisher} onChange={e => setFormData({...formData, publisher: e.target.value})} className="w-full bg-primary-bg border border-border rounded-lg px-4 py-2.5 text-primary-text focus:border-gold outline-none transition-colors" placeholder="e.g. IGI Global" />
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="block text-sm font-medium text-primary-text mb-1">Button Text (e.g. View Chapter)</label>
+                  <input type="text" value={formData.summary} onChange={e => setFormData({...formData, summary: e.target.value})} className="w-full bg-primary-bg border border-border rounded-lg px-4 py-2.5 text-primary-text focus:border-gold outline-none transition-colors" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-primary-text mb-1">Publication URL</label>
+                  <input type="url" value={formData.publication_url} onChange={e => setFormData({...formData, publication_url: e.target.value})} className="w-full bg-primary-bg border border-border rounded-lg px-4 py-2.5 text-primary-text focus:border-gold outline-none transition-colors" />
+                </div>
+              </div>
+              
+              <div className="flex items-center space-x-3 pt-2">
+                <input type="checkbox" id="is_published" checked={formData.is_published} onChange={e => setFormData({...formData, is_published: e.target.checked})} className="w-4 h-4 text-gold border-gray-300 rounded focus:ring-gold" />
+                <label htmlFor="is_published" className="text-sm font-medium text-primary-text cursor-pointer">Visible on Public Portfolio</label>
+              </div>
+
+              <div className="pt-6 flex justify-end space-x-3 border-t border-border mt-6">
+                <button type="button" onClick={handleCloseModal} className="px-5 py-2.5 text-secondary-text hover:text-primary-text hover:bg-secondary-bg rounded-lg transition-colors font-medium">Cancel</button>
+                <button type="submit" className="bg-gold hover:bg-gold-dark text-white font-medium py-2.5 px-6 rounded-lg transition-colors flex items-center shadow-sm">
+                  <Check size={18} className="mr-2" /> {editingId ? 'Update Publication' : 'Save Publication'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
